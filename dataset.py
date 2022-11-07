@@ -49,7 +49,7 @@ class PixelDataset(Dataset):
         self.split = split
         if verbose: print('creating dataset')
         self.images = np.stack(data_dict['images'])
-        self.images = self.images.astype(float) / 255
+        self.images = self.images.astype(np.float32) / 255
         if verbose: print('- images')
         self.matrices = np.stack(data_dict['matrices'])
         if verbose: print('- matrices')
