@@ -44,19 +44,19 @@ class IntegratedPositionalEncoder(nn.Module):
         self.freq_range = freq_range
     
     def forward(self, o, d, r, t0, t1):
-        t_mu = (t0 + t1) / 2
-        t_delta = (t1 - t0) / 2
-        t_mu2 = t_mu * t_mu
-        t_delta2 = t_delta * t_delta
-        t_delta4 = t_delta2 * t_delta2
-        A = 2 * t_mu * t_delta2
-        B = 3 * t_mu2 + t_delta2
-        mu_t = t_mu + A / B
-        sigma_t2 = t_delta2 / 3 - 4 * t_delta4 * (12 * t_mu2 - t_delta2) / (15 * B * B)
-        sigma_r2 = r * r * (t_mu2 / 4 + 5 * t_delta2 / 12 - 4 * t_delta4 / (15 * B))
+        t_mu = (t0 + t1) / 2 # [1, samples_on_ray, 1]
+        t_delta = (t1 - t0) / 2 # [1, samples_on_ray, 1]
+        t_mu2 = t_mu * t_mu # [1, samples_on_ray, 1]
+        t_delta2 = t_delta * t_delta # [1, samples_on_ray, 1]
+        t_delta4 = t_delta2 * t_delta2 # [1, samples_on_ray, 1]
+        A = 2 * t_mu * t_delta2 # [1, samples_on_ray, 1]
+        B = 3 * t_mu2 + t_delta2 # [1, samples_on_ray, 1]
+        mu_t = t_mu + A / B # [1, samples_on_ray, 1]
+        sigma_t2 = t_delta2 / 3 - 4 * t_delta4 * (12 * t_mu2 - t_delta2) / (15 * B * B) # [1, samples_on_ray, 1]
+        sigma_r2 = r * r * (t_mu2 / 4 + 5 * t_delta2 / 12 - 4 * t_delta4 / (15 * B)) # [1, samples_on_ray, 1]
         
-        mu = o + mu_t * d
-        dd = d * d
+        mu = o + mu_t * d # [batch, samples_on_ray, 3]
+        dd = d * d # [batch, 1, 3]
         cov_diag = sigma_t2 * dd + sigma_r2 * (1 - dd / torch.sum(dd, dim=-1, keepdim=True))
         
         log_freqs = torch.arange(*self.freq_range).to(o.device)
@@ -77,20 +77,24 @@ class IntegratedPositionalEncoder(nn.Module):
     def output_size(self):
         return 3 * 2 * (self.freq_range[1] - self.freq_range[0])
 
-def shifted_soft_plus(x):
-    return torch.log(1 + torch.exp(x-1))
+class shifted_soft_plus(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, x):
+        return torch.log(1 + torch.exp(x-1))
 
-def widened_sigmoid(x, epsilon=0.001):
-    return (1 + 2 * epsilon) / (1 + torch.exp(-x)) - epsilon
+class widened_sigmoid(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, x):
+        return (1 + 2 * 0.001) / (1 + torch.exp(-x)) - 0.001
 
 class NerfModel(nn.Module):
     def __init__(self, input_dim=69, 
                     input_dim_dir=22, 
                     hidden_dim=256, 
                     num_pre_res=4, 
-                    num_post_res=2, 
-                    act_func=shifted_soft_plus, 
-                    output_act_func=widened_sigmoid):
+                    num_post_res=2):
         super().__init__()
         self.input_layer = nn.Linear(input_dim, hidden_dim)
         self.pre_res_layers = nn.ModuleList(
@@ -101,8 +105,8 @@ class NerfModel(nn.Module):
         self.density_output_layer = nn.Linear(hidden_dim, hidden_dim+1)
         self.bottleneck_layer = nn.Linear(hidden_dim + 1 + input_dim_dir, hidden_dim // 2)
         self.output_layer = nn.Linear(hidden_dim // 2, 3)
-        self.act_func = act_func
-        self.output_act_func=output_act_func
+        self.act_func = nn.ReLU()
+        self.output_act_func = nn.Sigmoid()
     
     def forward(self, input_pos, input_dir):
         output = self.act_func(self.input_layer(input_pos))
