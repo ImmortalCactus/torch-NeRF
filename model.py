@@ -121,7 +121,7 @@ class NerfModel(nn.Module):
         input_dir = input_dir.expand(-1, output.shape[1], -1)
         output = torch.cat([output, input_dir], dim=-1)
         output = self.act_func(self.bottleneck_layer(output))
-        rgb = self.output_act_func(self.output_layer(output))
+        rgb = self.output_act_func(self.output_layer(output)) * (1 + 2 * 0.001) - 0.001
         return density, rgb
 
 def integrate(sigma, c, delta):

@@ -1,2 +1,4 @@
 nerf_synthetic/*
 __pycache__/*
+ckpt/*
+*.png

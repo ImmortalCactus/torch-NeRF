@@ -17,7 +17,7 @@ parser.add_argument('--lr', type=float, default=1e-5)
 parser.add_argument('--epoch', type=int, default=1)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--freq_low', type=int, default=-2)
-parser.add_argument('--freq_high', type=int, default=8)
+parser.add_argument('--freq_high', type=int, default=12)
 parser.add_argument('--freq_dir_low', type=int, default=0)
 parser.add_argument('--freq_dir_high', type=int, default=4)
 parser.add_argument('--near', type=float, default=2)
@@ -39,7 +39,8 @@ def adjust_optim(opt, n_iter):
     opt.param_groups['lr']
 
 def train(train_dataset):
-    encoder = model.IntegratedPositionalEncoder(freq_range=[args.freq_low, args.freq_high]).to(device)
+    # encoder = model.IntegratedPositionalEncoder(freq_range=[args.freq_low, args.freq_high]).to(device)
+    encoder = model.PositionalEncoder(input_size=3, freq_range=[args.freq_low, args.freq_high]).to(device)
     dir_encoder = model.PositionalEncoder(input_size=2, freq_range=[0, 4]).to(device)
     
     nerf_model = model.NerfModel(input_dim=encoder.output_size(), 
@@ -50,13 +51,14 @@ def train(train_dataset):
 
     dataloader = DataLoader(train_dataset, 
                             batch_size=args.batch_size,
-                            shuffle=False)
+                            shuffle=True)
 
     nerf_model.train()
     step_counter = 0
     count = 0
     for epoch in range(args.epoch):
         for i, j, k in tqdm.tqdm(dataloader):
+            step_counter += 1
             o = i.to(device)
             d = j.to(device)
             ground_truth = k.to(device)
@@ -67,12 +69,10 @@ def train(train_dataset):
             r = 1 / train_dataset.focal / 1.732 # sqrt(3)
             o = o.reshape([args.batch_size, 1, 3])
             d = d.reshape([args.batch_size, 1, 3])
-            encoded = encoder(o, d, r, t0, t1)
-            for l in range(encoded.shape[-1]):
-                x = encoded[..., l].cpu().numpy()
-                plt.plot(x)
-                plt.savefig(f'{l}.png')
-            return
+            # encoded = encoder(o, d, r, t0, t1)
+            random_t = torch.rand(o.shape[0], t0.shape[2], 1).to(device)
+            t_vals = (t0 * random_t + t1 * (1 - random_t))
+            encoded = encoder(o + d * t_vals)
             dirs = d / torch.norm(d, dim=-1, keepdim=True)
             sphericals = render.get_spherical(dirs)
             dirs_encoded = dir_encoder(sphericals)
@@ -92,13 +92,16 @@ def train(train_dataset):
                 count = 0
                 print(f'loss: {loss}')
                 print(f'max_alpha: {torch.max(result[..., -1])}')
+                print(f'min_alpha: {torch.min(result[..., -1])}')
+            if step_counter == 5000:
+                torch.save(nerf_model.state_dict(), args.ckpt)
         torch.save(nerf_model.state_dict(), args.ckpt)
 
 def test(test_dataset):
     dataloader = DataLoader(test_dataset, 
                             batch_size=800,
                             shuffle=False)
-    encoder = model.IntegratedPositionalEncoder(freq_range=[-5, 5]).to(device)
+    encoder = model.PositionalEncoder(input_size=3, freq_range=[-2, 8]).to(device)
     dir_encoder = model.PositionalEncoder(input_size=2, freq_range=[0, 4]).to(device)
     nerf_model = model.NerfModel(input_dim=encoder.output_size(), 
                                 input_dim_dir=dir_encoder.output_size()).to(device)
@@ -120,7 +123,9 @@ def test(test_dataset):
             r = 1 / train_dataset.focal / 1.732 # sqrt(3)
             o = o.reshape([800, 1, 3])
             d = d.reshape([800, 1, 3])
-            encoded = encoder(o, d, r, t0, t1)
+            random_t = torch.rand(o.shape[0], t0.shape[2], 1).to(device)
+            t_vals = (t0 * random_t + t1 * (1 - random_t))
+            encoded = encoder(o + d * t_vals)
             dirs = d / torch.norm(d, dim=-1, keepdim=True)
             sphericals = render.get_spherical(dirs)
             dirs_encoded = dir_encoder(sphericals)
@@ -147,14 +152,13 @@ def test(test_dataset):
 if __name__ == "__main__":
     raw_data = dataset.load_synthetic(args.data_path, verbose=True)
     train_dataset = dataset.PixelDataset(raw_data['train'], verbose=True)
-
+    test_dataset = dataset.PixelDataset(raw_data['test'], verbose=True)
     
     if args.mode == 'train':
         train(train_dataset)
     elif args.mode == 'test':
-        test(train_dataset)
+        test(test_dataset)
     elif args.mode == 'debug':
-        t = torch.linspace(args.near, args.far, 65)
+        t = torch.linspace(-4, 4, 1025)
         t0 = t[:-1].reshape([1, -1, 1])
         t1 = t[1:].reshape([1, -1, 1])
-    
