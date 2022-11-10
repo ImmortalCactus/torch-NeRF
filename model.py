@@ -57,7 +57,7 @@ class IntegratedPositionalEncoder(nn.Module):
         
         mu = o + mu_t * d # [batch, samples_on_ray, 3]
         dd = d * d # [batch, 1, 3]
-        cov_diag = sigma_t2 * dd + sigma_r2 * (1 - dd / torch.sum(dd, dim=-1, keepdim=True))
+        cov_diag = sigma_t2 * dd + sigma_r2 * (1 - dd / torch.pow(torch.norm(d), 2))
         
         log_freqs = torch.arange(*self.freq_range).to(o.device)
         freqs = torch.pow(4, log_freqs)
