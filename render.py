@@ -55,12 +55,6 @@ def get_ray(h, w, f, matrix, i, j):
     d = np.matmul(coord, matrix[:3, :3].T)
     return o, d
 
-def gen_sample_points_uniform(o, d, near=2, far=6, num_samples=64):
-    o = torch.unsqueeze(o, 1)
-    d = torch.unsqueeze(d, 1)
-    t = torch.linspace(0., 1., num_samples).unsqueeze(1).unsqueeze(0)
-    return o + d * (near + (far-near) * t)
-
 def get_spherical(d):
     theta = torch.arccos(d[..., 2])
     c = torch.complex(d[..., 0], d[..., 1])

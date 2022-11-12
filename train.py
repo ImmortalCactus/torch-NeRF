@@ -28,6 +28,8 @@ parser.add_argument('--clip', type=float, default=1)
 parser.add_argument('--ckpt', type=str, default='ckpt/model.ckpt')
 parser.add_argument('--from_ckpt', action=argparse.BooleanOptionalAction, default=False)
 parser.add_argument('--mode', type=str, default='train')
+parser.add_argument('--warmup', type=int, default=10000)
+parser.add_argument('--lr_low', type=float, default=5e-6)
 args = parser.parse_args()
 
 if torch.cuda.is_available():
@@ -36,8 +38,6 @@ else:
     device = torch.device('cpu')
 print(f'using {device} as device')
 
-def adjust_optim(opt, n_iter):
-    opt.param_groups['lr']
 
 def train(train_dataset):
     encoder = model.IntegratedPositionalEncoder(freq_range=[args.freq_low, args.freq_high]).to(device)
@@ -49,6 +49,18 @@ def train(train_dataset):
     if args.from_ckpt:
         nerf_model.load_state_dict(torch.load(args.ckpt))
     opt = torch.optim.Adam(nerf_model.parameters(), lr=args.lr)
+
+    def lr_lambda(i):
+        if i < args.warmup:
+            ret = args.lr_low + (args.lr - args.lr_low) * np.sin(np.pi / 2 * i / args.warmup)
+        else:
+            ret = 1
+            num_iter = args.epoch * len(train_dataset) // args.batch_size
+            w = i / num_iter
+            ret *= np.exp((1-w) * np.log(args.lr) + w * np.log(args.lr_low))
+        return ret / args.lr
+
+    sch = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
     loss_func = nn.MSELoss()
 
     dataloader = DataLoader(train_dataset, 
@@ -95,9 +107,11 @@ def train(train_dataset):
             opt.zero_grad()
             loss.backward()
             opt.step()
+            sch.step()
             count += 1
             if count == 100:
                 count = 0
+                print(f'lr: {opt.param_groups[0]["lr"]}')
                 print(f'loss: {loss}')
                 print(f'max_alpha: {torch.max(result[..., -1])}')
                 print(f'min_alpha: {torch.min(result[..., -1])}')
@@ -124,7 +138,6 @@ def test(test_dataset):
             o = i.to(device)
             d = j.to(device)
             ground_truth = k.to(device)
-            t = torch.linspace(args.near, args.far, 65)
             t = torch.linspace(args.near, args.far, args.sample_per_ray)
             t = t.to(device)
             t0 = t[:-1].reshape([1, -1, 1])
