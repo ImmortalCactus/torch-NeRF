@@ -19,7 +19,7 @@ class PositionalEncoder(nn.Module):
         self.multiply_by_pi = multiply_by_pi
     
     def forward(self, x):
-        raw = torch.unsqueeze(x, 2)
+        raw = x[..., None, :]
         if self.multiply_by_pi:
             raw = raw * torch.pi
         pre_f = self.freq_const * raw
@@ -64,10 +64,10 @@ class IntegratedPositionalEncoder(nn.Module):
         dd = d * d # [batch, 1, 3]
         cov_diag = sigma_t2 * dd + sigma_r2 * (1 - dd / torch.pow(torch.norm(d), 2))
         
-        cov_diag_gamma = self.freq_const * torch.unsqueeze(cov_diag, 2)
+        cov_diag_gamma = self.freq_const * cov_diag[..., None, :]
         cov_diag_gamma = cov_diag_gamma.reshape(*cov_diag_gamma.shape[:-2], -1)
 
-        mu_gamma = self.freq_const * torch.unsqueeze(mu, 2)
+        mu_gamma = self.freq_const * mu[..., None, :]
         mu_gamma = mu_gamma.reshape(*mu_gamma.shape[:-2], -1)
 
         encoded = [torch.sin(mu_gamma) * torch.exp(- cov_diag_gamma / 2),

@@ -63,16 +63,18 @@ def gen_intervals(near, far, batch_size, num_sample):
     """generate intervals to encoded upon"""
     t = torch.linspace(near, far, num_sample+1)
     mid = (t[:-1] + t[1:]) / 2
-    lower = torch.cat([t[:1], mid], dim=-1).unsqueeze(0)
-    upper = torch.cat([mid, t[-1:]], dim=-1).unsqueeze(0)
+    lower = torch.cat([t[:1], mid], dim=-1)
+    upper = torch.cat([mid, t[-1:]], dim=-1)
     random_w = torch.rand(batch_size, num_sample+1)
-    t = lower * (1 - random_w) + upper * random_w
-    t = torch.unsqueeze(t, 2)
+    t = lower[None, ...] * (1 - random_w) + upper[None, ...] * random_w
+    t = t[..., None]
     return t
 
 class FineSampler():
     def __init__(self, weights, t_vals, alpha=0):
-        self.dist = torch.distributions.categorical.Categorical((weights+alpha).reshape(*weights.shape[:2]))
+        weights = weights + alpha
+        weights = weights.squeeze(2)
+        self.dist = torch.distributions.categorical.Categorical()
         self.t_vals = t_vals
     def sample(self, n):
         sampled = self.dist.sample((n,))
@@ -106,13 +108,13 @@ class FineSampler2():
         sampled = torch.linspace(0, 1-1e-10, n, device=self.cum_w.device)
         if random:
             mid = (sampled[:-1] + sampled[1:]) / 2
-            lower = torch.cat([sampled[:1], mid], dim=-1).unsqueeze(0)
-            upper = torch.cat([mid, sampled[-1:]], dim=-1).unsqueeze(0)
+            lower = torch.cat([sampled[:1], mid], dim=-1)
+            upper = torch.cat([mid, sampled[-1:]], dim=-1)
             random_w = torch.rand(self.cum_w.shape[0], n, device=self.cum_w.device)
-            sampled = lower * (1 - random_w) + upper * random_w
-            sampled = sampled.unsqueeze(2)
+            sampled = lower[None, ...] * (1 - random_w) + upper[None, ...] * random_w
+            sampled = sampled[..., None]
         else:
-            sampled = sampled.reshape([1, -1, 1])
+            sampled = sampled[None, :, None]
         
         mask = sampled >= self.cum_w
         

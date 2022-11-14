@@ -45,7 +45,7 @@ def forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder):
     sphericals = render.get_spherical(dirs)
     dirs_encoded = dir_encoder(sphericals)
     density, rgb = nerf_model(encoded, dirs_encoded)
-    density = torch.unsqueeze(density, 2)
+    density = density[..., None]
     delta_t = t_vals[:, 1:, :] - t_vals[:, :-1, :]
     delta_t *= torch.norm(d, dim=-1, keepdim=True)
     weights = render.integrate_weights(density, delta_t)
@@ -90,8 +90,8 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
             d = d.to(device)
             ground_truth = ground_truth.to(device)
             r = 1 / train_dataset.focal / 1.732 # sqrt(3)
-            o = o.reshape([args.batch_size, 1, 3])
-            d = d.reshape([args.batch_size, 1, 3])
+            o = o[:, None, :]
+            d = d[:, None, :]
 
             t_vals = render.gen_intervals(args.near, args.far, args.batch_size, args.sample_per_ray)
             t_vals = t_vals.to(device)
@@ -101,7 +101,7 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
             fine_sampler = render.FineSampler2(weights_coarse, t_vals, alpha=0.001)
             fine_t_vals = fine_sampler.sample(args.fine_sample_per_ray + 1, random=True).detach()
 
-            weights_fine, result_fine = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder)
+            _, result_fine = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder)
 
             coarse_loss = loss_func(result_coarse, ground_truth)
             fine_loss = loss_func(result_fine, ground_truth)
@@ -139,8 +139,8 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
             d = d.to(device)
             ground_truth = ground_truth.to(device)
             r = 1 / test_dataset.focal / 1.732 # sqrt(3)
-            o = o.reshape([test_dataset.width, 1, 3])
-            d = d.reshape([test_dataset.width, 1, 3])
+            o = o[:, None, :]
+            d = d[:, None, :]
 
             t_vals = render.gen_intervals(args.near, args.far, test_dataset.width, args.sample_per_ray)
             t_vals = t_vals.to(device)
