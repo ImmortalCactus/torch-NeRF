@@ -10,19 +10,20 @@ class PositionalEncoder(nn.Module):
         super().__init__()
         self.input_size = input_size
         self.freq_range = freq_range
+        log_freqs = torch.arange(*self.freq_range)
+        freqs = torch.pow(2, log_freqs)
+        self.freqs = freqs.reshape([1, 1, -1, 1])
+        self.register_buffer('freq_const', self.freqs)
         self.encoding_functions = encoding_functions
         self.keep_raw = keep_raw
         self.multiply_by_pi = multiply_by_pi
     
     def forward(self, x):
-        log_freqs = torch.arange(*self.freq_range)
-        log_freqs = log_freqs.to(x.device)
-        freqs = torch.pow(2, log_freqs)
-        freqs = torch.broadcast_to(freqs, (*x.shape[:-1], 1, freqs.shape[0]))
-        raw = torch.unsqueeze(x, len(x.shape))
+        raw = torch.unsqueeze(x, 2)
         if self.multiply_by_pi:
             raw = raw * torch.pi
-        pre_f = torch.reshape(freqs * raw, [*x.shape[:-1], -1])
+        pre_f = self.freq_const * raw
+        pre_f = pre_f.reshape([*pre_f.shape[:-2], -1])
 
         if self.keep_raw:
             encoded = [x]
@@ -42,6 +43,10 @@ class IntegratedPositionalEncoder(nn.Module):
     def __init__(self, freq_range=(-5, 5)):
         super().__init__()
         self.freq_range = freq_range
+        log_freqs = torch.arange(*self.freq_range)
+        freqs = torch.pow(4, log_freqs)
+        self.freqs = freqs.reshape([1, 1, -1, 1])
+        self.register_buffer('freq_const', self.freqs)
     
     def forward(self, o, d, r, t0, t1):
         t_mu = (t0 + t1) / 2 # [1, samples_on_ray, 1]
@@ -59,13 +64,10 @@ class IntegratedPositionalEncoder(nn.Module):
         dd = d * d # [batch, 1, 3]
         cov_diag = sigma_t2 * dd + sigma_r2 * (1 - dd / torch.pow(torch.norm(d), 2))
         
-        log_freqs = torch.arange(*self.freq_range).to(o.device)
-        freqs = torch.pow(4, log_freqs)
-        freqs = freqs.reshape([1, 1, -1, 1])
-        cov_diag_gamma = freqs * torch.unsqueeze(cov_diag, 2)
+        cov_diag_gamma = self.freq_const * torch.unsqueeze(cov_diag, 2)
         cov_diag_gamma = cov_diag_gamma.reshape(*cov_diag_gamma.shape[:-2], -1)
 
-        mu_gamma = freqs * torch.unsqueeze(mu, 2)
+        mu_gamma = self.freq_const * torch.unsqueeze(mu, 2)
         mu_gamma = mu_gamma.reshape(*mu_gamma.shape[:-2], -1)
 
         encoded = [torch.sin(mu_gamma) * torch.exp(- cov_diag_gamma / 2),
@@ -123,19 +125,3 @@ class NerfModel(nn.Module):
         output = self.act_func(self.bottleneck_layer(output))
         rgb = self.output_act_func(self.output_layer(output)) * (1 + 2 * 0.001) - 0.001
         return density, rgb
-
-def integrate(sigma, c, delta):
-    # [batch, sample per ray, 3/1]
-    T = sigma * delta
-    T = torch.cumsum(T, dim=1).roll(1, -1)
-    T[:, 0, :] *= 0
-    T = -T
-    T = torch.exp(T)
-
-    alpha = torch.ones([c.shape[0], c.shape[1], 1]).to(c.device)
-    c = torch.cat([c, alpha], dim=-1)
-    T = T * c
-    T = T * (1 - torch.exp(- sigma * delta))
-    C = torch.sum(T, dim=1)
-
-    return C
