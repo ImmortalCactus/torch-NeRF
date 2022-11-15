@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from torch.nn.functional import pad
 def get_c2w(t, rho_x, rho_y):
     translation = np.array([
         [1, 0, 0, 0],
@@ -59,13 +60,13 @@ def integrate_weights(density, delta):
     T = T * (1 - torch.exp(- density * delta))
     return T
 
-def gen_intervals(near, far, batch_size, num_sample):
+def gen_intervals(near, far, batch_size, num_sample, device=torch.device('cuda')):
     """generate intervals to encoded upon"""
-    t = torch.linspace(near, far, num_sample+1)
+    t = torch.linspace(near, far, num_sample+1, device=device)
     mid = (t[:-1] + t[1:]) / 2
     lower = torch.cat([t[:1], mid], dim=-1)
     upper = torch.cat([mid, t[-1:]], dim=-1)
-    random_w = torch.rand(batch_size, num_sample+1)
+    random_w = torch.rand(batch_size, num_sample+1, device=device)
     t = lower[None, ...] * (1 - random_w) + upper[None, ...] * random_w
     t = t[..., None]
     return t
@@ -86,7 +87,7 @@ class FineSampler():
             upper.append(torch.index_select(self.t_vals[i], 0, sampled[i]+1))
         upper = torch.stack(upper, dim=0)
         lower = torch.stack(lower, dim=0)
-        w = torch.rand(*upper.shape).to(upper.device)
+        w = torch.rand(*upper.shape, device=upper.device)
         ret = lower * (1-w) + upper * w
         ret, _ = ret.sort(dim=1)
         return ret
@@ -99,7 +100,7 @@ class FineSampler2():
         self.weights = (self.weights[:, :-1, :] + self.weights[:, 1:, :]) / 2
         self.cum_w = torch.cumsum(self.weights, dim=1)
         self.cum_w = self.cum_w / self.cum_w[:, -1:, :]
-        self.cum_w = torch.cat([torch.zeros(self.cum_w.shape[0], 1, 1, device=self.cum_w.device), self.cum_w], dim=1)
+        self.cum_w = pad(self.cum_w, (0, 0, 1, 0, 0, 0))
         self.t_vals = t_vals
 
         self.cum_w = self.cum_w.swapaxes(1, 2) # [batch, fine, coarse]

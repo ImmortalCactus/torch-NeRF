@@ -79,18 +79,6 @@ class IntegratedPositionalEncoder(nn.Module):
     def output_size(self):
         return 3 * 2 * (self.freq_range[1] - self.freq_range[0])
 
-class shifted_soft_plus(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self, x):
-        return torch.log(1 + torch.exp(x-1))
-
-class widened_sigmoid(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self, x):
-        return (1 + 2 * 0.001) / (1 + torch.exp(-x)) - 0.001
-
 class NerfModel(nn.Module):
     def __init__(self, input_dim=69, 
                     input_dim_dir=22, 
