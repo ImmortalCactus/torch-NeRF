@@ -54,7 +54,7 @@ def integrate_weights(density, delta):
     # [batch, sample per ray, 3/1]
     T = density * delta
     T = torch.cumsum(T, dim=1).roll(1, 1)
-    T[:, 0, :] *= 0
+    T[:, 0, :] = T[:, 0, :] * 0
     T = -T
     T = torch.exp(T)
     T = T * (1 - torch.exp(- density * delta))
@@ -105,15 +105,21 @@ class FineSampler2():
 
         self.cum_w = self.cum_w.swapaxes(1, 2) # [batch, fine, coarse]
         self.t_vals = self.t_vals.swapaxes(1, 2)
-    def sample(self, n, random=True):
+    def sample(self, n, random=True, stratified=False):
         sampled = torch.linspace(0, 1-1e-10, n, device=self.cum_w.device)
         if random:
-            mid = (sampled[:-1] + sampled[1:]) / 2
-            lower = torch.cat([sampled[:1], mid], dim=-1)
-            upper = torch.cat([mid, sampled[-1:]], dim=-1)
-            random_w = torch.rand(self.cum_w.shape[0], n, device=self.cum_w.device)
-            sampled = lower[None, ...] * (1 - random_w) + upper[None, ...] * random_w
-            sampled = sampled[..., None]
+            if stratified:
+                mid = (sampled[:-1] + sampled[1:]) / 2
+                lower = torch.cat([sampled[:1], mid], dim=-1)
+                upper = torch.cat([mid, sampled[-1:]], dim=-1)
+                random_w = torch.rand(self.cum_w.shape[0], n, device=self.cum_w.device)
+                sampled = lower[None, ...] * (1 - random_w) + upper[None, ...] * random_w
+                sampled = sampled[..., None]
+            else:
+                sampled = torch.rand(self.cum_w.shape[0], n + 1, device=self.cum_w.device)
+                sampled = torch.cumsum(sampled, dim=1)
+                sampled = sampled[:, :-1] / sampled[:, -1:]
+                sampled = sampled[..., None] * 1-1e-10
         else:
             sampled = sampled[None, :, None]
         

@@ -33,6 +33,7 @@ parser.add_argument('--warmup', type=int, default=10000)
 parser.add_argument('--lr_low', type=float, default=5e-6)
 parser.add_argument('--lambda_loss', type=float, default=0.1)
 parser.add_argument('--num_workers', type=int, default=2)
+parser.add_argument('--white_bkgd', action=argparse.BooleanOptionalAction, default=False)
 
 args = parser.parse_args()
 
@@ -48,12 +49,13 @@ def forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder):
     sphericals = render.get_spherical(dirs)
     dirs_encoded = dir_encoder(sphericals)
     density, rgb = nerf_model(encoded, dirs_encoded)
-    density = density[..., None]
     delta_t = t_vals[:, 1:, :] - t_vals[:, :-1, :]
     delta_t *= torch.norm(d, dim=-1, keepdim=True)
     weights = render.integrate_weights(density, delta_t)
-    rgba = pad(rgb, (0, 1), 'constant', 1.)
-    result = torch.sum(rgba * weights, dim=1)
+    a = torch.sum(weights, dim=1)
+    result = torch.sum(rgb * weights, dim=1)
+    if args.white_bkgd:
+        result = result + (1 - a)
     return weights, result
 
 def train(train_dataset, nerf_model, encoder, dir_encoder):
@@ -88,29 +90,40 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
 
     nerf_model.train()
     for epoch in range(args.epoch):
-        for it, (o, d, ground_truth) in enumerate(pbar:= tqdm.tqdm(dataloader)):
+        epoch_loss = 0
+        pbar = tqdm.tqdm(dataloader)
+        for it, (o, d, ground_truth, pixel_size, scale) in enumerate(pbar):
             opt.zero_grad()
 
             with torch.cuda.amp.autocast():
                 o = o.to(device)
                 d = d.to(device)
                 ground_truth = ground_truth.to(device)
-                r = 1 / train_dataset.focal / 1.732 # sqrt(3)
+                if args.white_bkgd:
+                    ground_truth = ground_truth[..., :3] * ground_truth[..., -1:] + (1 - ground_truth[..., -1:])
+                else:
+                    ground_truth = ground_truth[..., :3] * ground_truth[..., -1:]
+                r = pixel_size / 1.732 # sqrt(3)
+                r = r.to(device, torch.float32)
                 o = o[:, None, :]
                 d = d[:, None, :]
+                r = r[:, None, None]
 
-                t_vals = render.gen_intervals(args.near, args.far, args.batch_size, args.sample_per_ray, device=device)
-
+                t_vals = render.gen_intervals(args.near, args.far, o.shape[0], args.sample_per_ray, device=device)
                 weights_coarse, result_coarse = forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder)
 
                 fine_sampler = render.FineSampler2(weights_coarse, t_vals, alpha=0.001)
-                fine_t_vals = fine_sampler.sample(args.fine_sample_per_ray + 1, random=True).detach()
+                fine_t_vals = fine_sampler.sample(args.fine_sample_per_ray + 1, random=True, stratified=False).detach()
 
                 _, result_fine = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder)
 
-                coarse_loss = loss_func(result_coarse, ground_truth)
-                fine_loss = loss_func(result_fine, ground_truth)
+                s = scale[:, None].to(device)
+                coarse_loss = loss_func(result_coarse * s, ground_truth * s)
+                fine_loss = loss_func(result_fine * s, ground_truth * s)
+                coarse_estimated_loss = loss_func(result_coarse, ground_truth)
+                fine_estimated_loss = loss_func(result_fine, ground_truth)
                 loss = fine_loss + args.lambda_loss * coarse_loss
+                epoch_loss += loss
 
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -119,9 +132,8 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
 
             summary = [
                 f'epoch {epoch}',
-                f'iteration {it}/{len(dataloader)}',
-                f'loss: {coarse_loss:.3e}/{fine_loss:.3e}/{loss:.3e}',
-                f'alpha: {torch.max(result_fine[..., -1:]):.2f}/{torch.min(result_fine[..., -1:]):.2f}'
+                f'iteration {it}/{len(dataloader)}', 
+                f'coarse/fine/loss {coarse_estimated_loss:.3e}/{fine_estimated_loss:.3e}/{loss:.3e}'
             ]
             pbar.set_description(' | '.join(summary))
         torch.save({
@@ -129,42 +141,47 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
             'opt': opt.state_dict(),
             'sch': sch.state_dict()
             }, args.ckpt)
+        print(f'avg training loss: {(epoch_loss/len(dataloader)):.8e}')
 
 def test(test_dataset, nerf_model, encoder, dir_encoder):
     dataloader = DataLoader(test_dataset, 
-                            batch_size=test_dataset.width,
+                            batch_size=test_dataset.widths[0],
                             shuffle=False)
-    nerf_model.load_state_dict(torch.load(args.ckpt['model']))
+    nerf_model.load_state_dict(torch.load(args.ckpt)['model'])
     nerf_model.eval()
     with torch.no_grad():
         rows = []
         depth_rows = []
         idx_png = 0
-        for o, d, ground_truth in tqdm.tqdm(dataloader):
+        for o, d, ground_truth, pixel_size, scale in tqdm.tqdm(dataloader):
             o = o.to(device)
             d = d.to(device)
-            ground_truth = ground_truth.to(device)
-            r = 1 / test_dataset.focal / 1.732 # sqrt(3)
+            r = pixel_size / 1.732 # sqrt(3)
+            r = r.to(device, torch.float32)
             o = o[:, None, :]
             d = d[:, None, :]
+            r = r[:, None, None]
 
-            t_vals = render.gen_intervals(args.near, args.far, test_dataset.width, args.sample_per_ray, device=device)
+            t_vals = render.gen_intervals(args.near, args.far, test_dataset.widths[0], args.sample_per_ray, device=device)
 
             weights_coarse, _ = forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder)
 
             fine_sampler = render.FineSampler2(weights_coarse, t_vals, alpha=0.001)
-            fine_t_vals = fine_sampler.sample(args.fine_sample_per_ray + 1, random=True).detach()
+            fine_t_vals = fine_sampler.sample(args.fine_sample_per_ray + 1, random=True)
 
             weights_fine, result_fine = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder)
-            depths = torch.sum(weights_fine * fine_t_vals, dim=1)
+            result_fine = torch.cat([result_fine, torch.ones(result_fine.shape[0], 1, device=device)], dim=-1)
+            E_t_vals = (fine_t_vals[:, :-1, :] + fine_t_vals[:, 1:, :]) / 2
+            sum_w = torch.sum(weights_fine, dim=1)
+            depths = torch.sum(weights_fine * E_t_vals, dim=1) / sum_w
             depths = (depths - args.near) / (args.far - args.near)
-            depths = depths * 0.8 + 0.1
+            depths = depths * -0.8 + 0.9
             depths = depths.expand(-1, 3)
-            depths = torch.cat([depths, result_fine[:, -1:]], dim=3)
+            depths = torch.cat([depths, torch.ones(depths.shape[0], 1, device=device)], dim=-1)
 
             rows.append(result_fine)
             depth_rows.append(depths)
-            if len(rows) % test_dataset.height == 0:
+            if len(rows) % test_dataset.heights[0] == 0:
                 img = torch.stack(rows)
                 img = img.cpu().numpy()
                 img *= 255
@@ -174,6 +191,7 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
                 img.save(f'output/{idx_png}.png')
 
                 img = torch.stack(depth_rows)
+                print(img.shape)
                 img = img.cpu().numpy()
                 img *= 255
                 img = img.astype(np.uint8)
@@ -187,12 +205,12 @@ if __name__ == "__main__":
     encoder = model.IntegratedPositionalEncoder(freq_range=[args.freq_low, args.freq_high]).to(device)
     dir_encoder = model.PositionalEncoder(input_size=2, freq_range=[0, 4]).to(device)
     nerf_model = model.NerfModel(input_dim=encoder.output_size(), 
-                                input_dim_dir=dir_encoder.output_size()).to(device)
+                                input_dim_dir=dir_encoder.output_size()).to(device).float()
     raw_data = dataset.load_synthetic(args.data_path, verbose=True)
     
     if args.mode == 'train':
-        train_dataset = dataset.PixelDataset(raw_data['train'], verbose=True)
+        train_dataset = dataset.PixelDataset(raw_data['train'], mip_level=4)
         train(train_dataset, nerf_model, encoder, dir_encoder)
     elif args.mode == 'test':
-        test_dataset = dataset.PixelDataset(raw_data['test'], verbose=True)
+        test_dataset = dataset.PixelDataset(raw_data['test'], mip_level=1)
         test(test_dataset, nerf_model, encoder, dir_encoder)
