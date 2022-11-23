@@ -47,13 +47,13 @@ class IntegratedPositionalEncoder(nn.Module):
     def forward(self, o, d, r, t0, t1):
         t_mu = (t0 + t1) / 2 # [1, samples_on_ray, 1]
         t_delta = (t1 - t0) / 2 # [1, samples_on_ray, 1]
-        mu_t = t_mu + (2 * t_mu * t_delta**2) / (3 * t_mu**2 + t_delta**2)
-        var_t = (t_delta**2) / 3 - (4 / 15) * ((t_delta**4 * (12 * t_mu**2 - t_delta**2)) / (3 * t_mu**2 + t_delta**2)**2)
-        var_r = r**2 * ((t_mu**2) / 4 + (5/12) * t_delta**2 - 4/15 * (t_delta**4) / (3 * t_mu**2 + t_delta**2)) # [1, samples_on_ray, 1]
+        mu_t = t_mu + (2 * t_mu * t_delta**2) / (3 * t_mu**2 + t_delta**2 + 1e-10)
+        var_t = (t_delta**2) / 3 - (4 / 15) * ((t_delta**4 * (12 * t_mu**2 - t_delta**2)) / (3 * t_mu**2 + t_delta**2 + 1e-10)**2)
+        var_r = r**2 * ((t_mu**2) / 4 + (5/12) * t_delta**2 - 4/15 * (t_delta**4) / (3 * t_mu**2 + t_delta**2 + 1e-10)) # [1, samples_on_ray, 1]
         
         mu = o + mu_t * d # [batch, samples_on_ray, 3]
         dd = d**2 # [batch, 1, 3]
-        mag = torch.sum(dd, dim=-1, keepdim=True)
+        mag = torch.sum(dd, dim=-1, keepdim=True) + 1e-10
         cov_diag = var_t * dd + var_r * (1 - dd / mag)
         
         cov_diag_gamma = self.freq_const * cov_diag[..., None, :]
@@ -78,31 +78,34 @@ class NerfModel(nn.Module):
         super().__init__()
         self.density0 = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(True),
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(True),
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(True),
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(True),
+            nn.ReLU(),
         )
         self.density1 = nn.Sequential(
             nn.Linear(input_dim + hidden_dim, hidden_dim),
-            nn.ReLU(True),
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(True),
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(True),
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(True),
+            nn.ReLU(),
         )
-        self.density_out = nn.Linear(hidden_dim, 1)
+        self.density_out = nn.Sequential(
+            nn.Linear(hidden_dim, 1),
+            nn.Softplus()
+        )
         self.rgb0 = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim)
         )
         self.rgb1 = nn.Sequential(
             nn.Linear(hidden_dim + input_dim_dir, hidden_dim),
-            nn.ReLU(True)
+            nn.ReLU()
         )
         self.rgb_out = nn.Sequential(
             nn.Linear(hidden_dim, 3),
@@ -110,10 +113,11 @@ class NerfModel(nn.Module):
         )
     
     def forward(self, input_pos, input_dir):
+        assert not torch.any(torch.isnan(input_pos))
         output = self.density0(input_pos)
         output = torch.cat([output, input_pos], axis=-1)
         output = self.density1(output)
-        density = self.density_out(output)
+        density = self.density_out(output - 1.)
         output = self.rgb0(output)
         output = torch.cat([output, input_dir.expand(-1, output.shape[1], -1)], dim=-1)
         output = self.rgb1(output)

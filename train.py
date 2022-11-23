@@ -89,59 +89,67 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
     scaler = torch.cuda.amp.GradScaler()
 
     nerf_model.train()
-    for epoch in range(args.epoch):
-        epoch_loss = 0
-        pbar = tqdm.tqdm(dataloader)
-        for it, (o, d, ground_truth, pixel_size, scale) in enumerate(pbar):
-            opt.zero_grad()
+    with torch.autograd.set_detect_anomaly(False):
+        for epoch in range(checkpoint['epoch'] if args.from_ckpt else 0, args.epoch):
+            epoch_loss = 0
+            pbar = tqdm.tqdm(dataloader)
+            for it, (o, d, ground_truth, pixel_size, scale) in enumerate(pbar):
+                with torch.cuda.amp.autocast(enabled=True):
+                    opt.zero_grad()
 
-            with torch.cuda.amp.autocast():
-                o = o.to(device)
-                d = d.to(device)
-                ground_truth = ground_truth.to(device)
-                if args.white_bkgd:
-                    ground_truth = ground_truth[..., :3] * ground_truth[..., -1:] + (1 - ground_truth[..., -1:])
-                else:
-                    ground_truth = ground_truth[..., :3] * ground_truth[..., -1:]
-                r = pixel_size / 1.732 # sqrt(3)
-                r = r.to(device, torch.float32)
-                o = o[:, None, :]
-                d = d[:, None, :]
-                r = r[:, None, None]
+                    o = o.to(device)
+                    d = d.to(device)
+                    ground_truth = ground_truth.to(device)
+                    if args.white_bkgd:
+                        ground_truth = ground_truth[..., :3] * ground_truth[..., -1:] + (1 - ground_truth[..., -1:])
+                    else:
+                        ground_truth = ground_truth[..., :3] * ground_truth[..., -1:]
+                    r = pixel_size * 2 / np.sqrt(12) # sqrt(3)
+                    r = r.to(device, torch.float32)
+                    o = o[:, None, :]
+                    d = d[:, None, :]
+                    r = r[:, None, None]
 
-                t_vals = render.gen_intervals(args.near, args.far, o.shape[0], args.sample_per_ray, device=device)
-                weights_coarse, result_coarse = forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder)
+                    t_vals = render.gen_intervals(args.near, args.far, o.shape[0], args.sample_per_ray, device=device)
+                    weights_coarse, result_coarse = forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder)
 
-                fine_sampler = render.FineSampler2(weights_coarse, t_vals, alpha=0.001)
-                fine_t_vals = fine_sampler.sample(args.fine_sample_per_ray + 1, random=True, stratified=False).detach()
+                    fine_sampler = render.FineSampler2(weights_coarse, t_vals, alpha=0.001)
+                    fine_t_vals = fine_sampler.sample(args.fine_sample_per_ray + 1, random=True, stratified=False).detach()
 
-                _, result_fine = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder)
+                    _, result_fine = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder)
 
-                s = scale[:, None].to(device)
-                coarse_loss = loss_func(result_coarse * s, ground_truth * s)
-                fine_loss = loss_func(result_fine * s, ground_truth * s)
-                coarse_estimated_loss = loss_func(result_coarse, ground_truth)
-                fine_estimated_loss = loss_func(result_fine, ground_truth)
-                loss = fine_loss + args.lambda_loss * coarse_loss
-                epoch_loss += loss
+                    s = scale[:, None].to(device)
+                    coarse_loss = loss_func(result_coarse * s, ground_truth * s)
+                    fine_loss = loss_func(result_fine * s, ground_truth * s)
+                    coarse_estimated_loss = loss_func(result_coarse, ground_truth)
+                    fine_estimated_loss = loss_func(result_fine, ground_truth)
+                    loss = fine_loss + args.lambda_loss * coarse_loss
+                    epoch_loss += loss
 
-            scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
-            sch.step()
-
-            summary = [
-                f'epoch {epoch}',
-                f'iteration {it}/{len(dataloader)}', 
-                f'coarse/fine/loss {coarse_estimated_loss:.3e}/{fine_estimated_loss:.3e}/{loss:.3e}'
-            ]
-            pbar.set_description(' | '.join(summary))
-        torch.save({
-            'model': nerf_model.state_dict(),
-            'opt': opt.state_dict(),
-            'sch': sch.state_dict()
-            }, args.ckpt)
-        print(f'avg training loss: {(epoch_loss/len(dataloader)):.8e}')
+                    #loss.backward()
+                    #opt.step()
+                    scaler.scale(loss).backward()
+                    scaler.step(opt)
+                    scaler.update()
+                    sch.step()
+                    alpha = torch.sum(weights_coarse, dim=1)
+                    nan_grad_count = 0
+                    for p in nerf_model.parameters():
+                        nan_grad_count += torch.sum(torch.isnan(p.grad))
+                summary = [
+                    f'epoch {epoch}',
+                    f'coarse/fine/loss {coarse_estimated_loss:.3e}/{fine_estimated_loss:.3e}/{loss:.3e}',
+                    f'alpha {torch.max(alpha):.3f}/{torch.min(alpha):.3f}',
+                    f'nan {nan_grad_count}'
+                ]
+                pbar.set_description(' | '.join(summary))
+            torch.save({
+                'model': nerf_model.state_dict(),
+                'opt': opt.state_dict(),
+                'sch': sch.state_dict(),
+                'epoch': epoch
+                }, args.ckpt)
+            print(f'avg training loss: {(epoch_loss/len(dataloader)):.8e}')
 
 def test(test_dataset, nerf_model, encoder, dir_encoder):
     dataloader = DataLoader(test_dataset, 
@@ -156,7 +164,7 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
         for o, d, ground_truth, pixel_size, scale in tqdm.tqdm(dataloader):
             o = o.to(device)
             d = d.to(device)
-            r = pixel_size / 1.732 # sqrt(3)
+            r = pixel_size / np.sqrt(3) # sqrt(3)
             r = r.to(device, torch.float32)
             o = o[:, None, :]
             d = d[:, None, :]

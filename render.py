@@ -93,11 +93,12 @@ class FineSampler():
         return ret
 
 class FineSampler2():
-    def __init__(self, weights, t_vals, alpha=0):
+    def __init__(self, weights, t_vals, alpha=0, epsilon=1e-5):
         self.weights = weights + alpha
         self.weights = torch.cat([self.weights[:, :1, :], self.weights, self.weights[:, -1:, :]], dim=1)
         self.weights = torch.maximum(self.weights[:, 1:, :], self.weights[:, :-1, :])
         self.weights = (self.weights[:, :-1, :] + self.weights[:, 1:, :]) / 2
+        self.weights = torch.clamp(self.weights, min=epsilon)
         self.cum_w = torch.cumsum(self.weights, dim=1)
         self.cum_w = self.cum_w / self.cum_w[:, -1:, :]
         self.cum_w = pad(self.cum_w, (0, 0, 1, 0, 0, 0))
@@ -108,18 +109,12 @@ class FineSampler2():
     def sample(self, n, random=True, stratified=False):
         sampled = torch.linspace(0, 1-1e-10, n, device=self.cum_w.device)
         if random:
-            if stratified:
-                mid = (sampled[:-1] + sampled[1:]) / 2
-                lower = torch.cat([sampled[:1], mid], dim=-1)
-                upper = torch.cat([mid, sampled[-1:]], dim=-1)
-                random_w = torch.rand(self.cum_w.shape[0], n, device=self.cum_w.device)
-                sampled = lower[None, ...] * (1 - random_w) + upper[None, ...] * random_w
-                sampled = sampled[..., None]
-            else:
-                sampled = torch.rand(self.cum_w.shape[0], n + 1, device=self.cum_w.device)
-                sampled = torch.cumsum(sampled, dim=1)
-                sampled = sampled[:, :-1] / sampled[:, -1:]
-                sampled = sampled[..., None] * 1-1e-10
+            mid = (sampled[:-1] + sampled[1:]) / 2
+            lower = torch.cat([sampled[:1], mid], dim=-1)
+            upper = torch.cat([mid, sampled[-1:]], dim=-1)
+            random_w = torch.rand(self.cum_w.shape[0], n, device=self.cum_w.device)
+            sampled = lower[None, ...] * (1 - random_w) + upper[None, ...] * random_w
+            sampled = sampled[..., None]
         else:
             sampled = sampled[None, :, None]
         
