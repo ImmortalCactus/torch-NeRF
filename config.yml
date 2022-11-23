@@ -1,0 +1,36 @@
+---
+resource:
+  device: cuda:2
+
+path:
+  data: ./nerf_synthetic/lego
+  output: ./output
+  ckpt: ./ckpt/model.ckpt
+
+training:
+  lr:
+    init: 0.0005
+    final: 0.000005
+  epoch: 50
+  batch: 4096
+  warmup: 2500
+  num_workers: 4
+  lambda_coarse: 0.1
+  from_ckpt: True
+
+render:
+  freq:
+    low: 0
+    high: 16
+  freq_dir:
+    low: 0
+    high: 4
+  near: 2.
+  far: 6.
+  samples:
+    coarse: 128
+    fine: 128
+  mip: 4
+  white_bkgd: True
+
+...
