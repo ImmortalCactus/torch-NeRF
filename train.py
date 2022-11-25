@@ -13,7 +13,7 @@ from PIL import Image
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mode', type=str, default='train')
-parser.add_argument('--config', type=str, default='config.yaml')
+parser.add_argument('--config', type=str, default='config.yml')
 args = parser.parse_args()
 config = yaml.safe_load(open(args.config))
 
