@@ -7,16 +7,18 @@ path:
   output: ./output
   ckpt: ./ckpt/model.ckpt
 
-training:
+train:
   lr:
     init: 0.0005
     final: 0.000005
   epoch: 50
   batch: 4096
   warmup: 2500
+  warmup_mult: 0.1
   num_workers: 4
   lambda_coarse: 0.1
-  from_ckpt: True
+  from_ckpt: False
+  weight_decay: 0.1
 
 render:
   freq:

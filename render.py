@@ -106,7 +106,7 @@ class FineSampler2():
 
         self.cum_w = self.cum_w.swapaxes(1, 2) # [batch, fine, coarse]
         self.t_vals = self.t_vals.swapaxes(1, 2)
-    def sample(self, n, random=True, stratified=False):
+    def sample(self, n, random=True):
         sampled = torch.linspace(0, 1-1e-10, n, device=self.cum_w.device)
         if random:
             mid = (sampled[:-1] + sampled[1:]) / 2

@@ -38,25 +38,44 @@ def forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder):
         result = result + (1 - a)
     return weights, result
 
+class MipLRDecay(torch.optim.lr_scheduler._LRScheduler):
+    def __init__(self, optimizer, lr_init, lr_final, max_steps, lr_delay_steps=0, lr_delay_mult=1):
+        self.lr_init = lr_init
+        self.lr_final = lr_final
+        self.max_steps = max_steps
+        self.lr_delay_steps = lr_delay_steps
+        self.lr_delay_mult = lr_delay_mult
+        super(MipLRDecay, self).__init__(optimizer)
+
+    def get_lr(self):
+        step = self.last_epoch
+        if self.lr_delay_steps > 0:
+            # A kind of reverse cosine decay.
+            delay_rate = self.lr_delay_mult + (1 - self.lr_delay_mult) * np.sin(
+                0.5 * np.pi * np.clip(self.last_epoch / self.lr_delay_steps, 0, 1))
+        else:
+            delay_rate = 1.
+        t = np.clip(step / self.max_steps, 0, 1)
+        log_lerp = np.exp(np.log(self.lr_init) * (1 - t) + np.log(self.lr_final) * t)
+        return [delay_rate * log_lerp]
+
 def train(train_dataset, nerf_model, encoder, dir_encoder):
-    opt = torch.optim.AdamW(nerf_model.parameters(), lr=args.lr)
     conf_train = config['train']
     conf_render = config['render']
-    def lr_lambda(i):
-        lr_init = conf_train['lr']['init']
-        lr_final = conf_train['lr']['final']
-        if i < conf_train['warmup']:
-            ret = lr_init + (lr_init - lr_final) * np.sin(np.pi / 2 * i / conf_train['warmup'])
-        else:
-            ret = 1
-            num_iter = args.epoch * len(train_dataset) // conf_train['batch']
-            w = i / num_iter
-            ret *= np.exp((1-w) * np.log(lr_init) + w * np.log(lr_final))
-        return ret / args.lr
+    opt = torch.optim.AdamW(nerf_model.parameters(),
+                            lr=conf_train['lr']['init'],
+                            weight_decay=conf_train['weight_decay'])
+    
+    sch = MipLRDecay(
+        opt,
+        conf_train['lr']['init'],
+        conf_train['lr']['final'],
+        conf_train['epoch'] * len(train_dataset) // conf_train['batch'],
+        lr_delay_steps=conf_train['warmup'],
+        lr_delay_mult=conf_train['warmup_mult']
+    )
 
-    sch = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
-
-    if args.from_ckpt:
+    if conf_train['from_ckpt']:
         checkpoint = torch.load(config['path']['ckpt'])
         nerf_model.load_state_dict(checkpoint['model'])
         opt.load_state_dict(checkpoint['opt'])
@@ -121,14 +140,10 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
                     scaler.update()
                     sch.step()
                     alpha = torch.sum(weights_coarse, dim=1)
-                    nan_grad_count = 0
-                    for p in nerf_model.parameters():
-                        nan_grad_count += torch.sum(torch.isnan(p.grad))
                 summary = [
                     f'epoch {epoch}',
                     f'coarse/fine/loss {coarse_estimated_loss:.3e}/{fine_estimated_loss:.3e}/{loss:.3e}',
-                    f'alpha {torch.max(alpha):.3f}/{torch.min(alpha):.3f}',
-                    f'nan {nan_grad_count}'
+                    f'alpha {torch.max(alpha):.3f}/{torch.min(alpha):.3f}'
                 ]
                 pbar.set_description(' | '.join(summary))
             torch.save({
@@ -171,7 +186,6 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
             fine_sampler = render.FineSampler2(weights_coarse, t_vals, alpha=0.001)
             fine_t_vals = fine_sampler.sample(
                 conf_render['samples']['fine'] + 1,
-                stratified=True,
                 random=True)
 
             weights_fine, result_fine = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder)
