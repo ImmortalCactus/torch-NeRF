@@ -19,6 +19,8 @@ train:
   lambda_coarse: 0.1
   from_ckpt: False
   weight_decay: 0.1
+  mixed_precision: True
+  detect_anomaly: False
 
 render:
   freq:
@@ -32,7 +34,7 @@ render:
   samples:
     coarse: 128
     fine: 128
-  mip: 4
+  mip: 1
   white_bkgd: True
 
 ...

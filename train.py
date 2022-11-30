@@ -23,7 +23,7 @@ else:
     device = torch.device('cpu')
 print(f'using {device} as device')
 
-def forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder):
+def forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder, more_info=False):
     encoded = encoder(o, d, r, t_vals[:, :-1, :], t_vals[:, 1:, :])
     dirs = d / torch.norm(d, dim=-1, keepdim=True)
     sphericals = render.get_spherical(dirs)
@@ -36,7 +36,12 @@ def forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder):
     result = torch.sum(rgb * weights, dim=1)
     if config['render']['white_bkgd']:
         result = result + (1 - a)
-    return weights, result
+    if more_info:
+        t_mid = (t_vals[:, 1:, :] + t_vals[:, :-1, :]) / 2
+        depths = torch.sum(t_mid * weights, dim=1)
+        return weights, result, a, depths
+    else:
+        return weights, result
 
 class MipLRDecay(torch.optim.lr_scheduler._LRScheduler):
     def __init__(self, optimizer, lr_init, lr_final, max_steps, lr_delay_steps=0, lr_delay_mult=1):
@@ -91,13 +96,12 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
     scaler = torch.cuda.amp.GradScaler()
 
     nerf_model.train()
-    with torch.autograd.set_detect_anomaly(False):
-        for epoch in range(checkpoint['epoch'] if conf_train['from_ckpt'] else 0, conf_train['epoch']):
+    with torch.autograd.set_detect_anomaly(conf_train['detect_anomaly']):
+        for epoch in range((checkpoint['epoch']+1) if conf_train['from_ckpt'] else 0, conf_train['epoch']):
             epoch_loss = 0
             pbar = tqdm.tqdm(dataloader)
-            for it, (o, d, ground_truth, pixel_size, scale) in enumerate(pbar):
-                with torch.cuda.amp.autocast(enabled=True):
-                    opt.zero_grad()
+            for o, d, ground_truth, pixel_size, scale in pbar:
+                with torch.cuda.amp.autocast(enabled=conf_train['mixed_precision']):
 
                     o = o.to(device)
                     d = d.to(device)
@@ -114,7 +118,8 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
 
                     t_vals = render.gen_intervals(
                         conf_render['near'], 
-                        conf_render['far'], o.shape[0],
+                        conf_render['far'],
+                        o.shape[0],
                         conf_render['samples']['coarse'],
                         device=device)
                     weights_coarse, result_coarse = forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder)
@@ -122,8 +127,8 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
                     fine_sampler = render.FineSampler2(weights_coarse, t_vals, alpha=0.001)
                     fine_t_vals = fine_sampler.sample(
                         conf_render['samples']['fine'] + 1,
-                        random=True,
-                        stratified=False).detach()
+                        random=True
+                    ).detach()
 
                     _, result_fine = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder)
 
@@ -135,9 +140,14 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
                     loss = fine_loss + conf_train['lambda_coarse'] * coarse_loss
                     epoch_loss += loss
 
-                    scaler.scale(loss).backward()
-                    scaler.step(opt)
-                    scaler.update()
+                    opt.zero_grad()
+                    if conf_train['mixed_precision']:
+                        scaler.scale(loss).backward()
+                        scaler.step(opt)
+                        scaler.update()
+                    else:
+                        loss.backward()
+                        opt.step()
                     sch.step()
                     alpha = torch.sum(weights_coarse, dim=1)
                 summary = [
@@ -157,14 +167,16 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
 def test(test_dataset, nerf_model, encoder, dir_encoder):
     conf_render = config['render']
     dataloader = DataLoader(test_dataset, 
-                            batch_size=test_dataset.widths[0],
+                            batch_size=config['train']['batch'],
                             shuffle=False)
     nerf_model.load_state_dict(torch.load(config['path']['ckpt'])['model'])
     nerf_model.eval()
     with torch.no_grad():
-        rows = []
-        depth_rows = []
+        pixels = torch.zeros([0, 3], device=device)
+        alphas = torch.zeros([0, 1], device=device)
+        depths = torch.zeros([0, 1], device=device)
         idx_png = 0
+
         for o, d, ground_truth, pixel_size, scale in tqdm.tqdm(dataloader):
             o = o.to(device)
             d = d.to(device)
@@ -177,7 +189,7 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
             t_vals = render.gen_intervals(
                 conf_render['near'],
                 conf_render['far'],
-                test_dataset.widths[0],
+                o.shape[0],
                 conf_render['samples']['coarse'],
                 device=device)
 
@@ -188,36 +200,33 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
                 conf_render['samples']['fine'] + 1,
                 random=True)
 
-            weights_fine, result_fine = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder)
-            result_fine = torch.cat([result_fine, torch.ones(result_fine.shape[0], 1, device=device)], dim=-1)
-            E_t_vals = (fine_t_vals[:, :-1, :] + fine_t_vals[:, 1:, :]) / 2
-            sum_w = torch.sum(weights_fine, dim=1)
-            depths = torch.sum(weights_fine * E_t_vals, dim=1) / sum_w
-            depths = (depths - conf_render['near']) / (conf_render['far'] - conf_render['near'])
-            depths = depths * -0.8 + 0.9
-            depths = depths.expand(-1, 3)
-            depths = torch.cat([depths, torch.ones(depths.shape[0], 1, device=device)], dim=-1)
+            weights_fine, result_fine, a, d = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder, more_info=True)
 
-            rows.append(result_fine)
-            depth_rows.append(depths)
-            if len(rows) % test_dataset.heights[0] == 0:
-                img = torch.stack(rows)
+            pixels = torch.cat([pixels, result_fine])
+            alphas = torch.cat([alphas, a])
+            depths = torch.cat([depths, d])
+            img_size = test_dataset.widths[0] * test_dataset.heights[0]
+            while pixels.shape[0] >= img_size:
+                img = pixels[:img_size, :]
+                pixels = pixels[img_size:, :]
+                img = img.reshape([test_dataset.widths[0], test_dataset.heights[0], 3])
                 img = img.cpu().numpy()
                 img *= 255
                 img = img.astype(np.uint8)
-                img = Image.fromarray(img, 'RGBA')
-                rows = []
+                img = Image.fromarray(img, 'RGB')
                 img.save(f'output/{idx_png}.png')
 
-                img = torch.stack(depth_rows)
-                print(img.shape)
-                img = img.cpu().numpy()
+                t_normalized = (depths[:img_size, :] - conf_render['near']) / (conf_render['far'] - conf_render['near'])
+                d_img = torch.cat([t_normalized.expand([-1, 3]), alphas[:img_size, :]], dim=1)
+                d_img = d_img.reshape([test_dataset.widths[0], test_dataset.heights[0], 4])
+                img = d_img.cpu().numpy()
                 img *= 255
                 img = img.astype(np.uint8)
                 img = Image.fromarray(img, 'RGBA')
-                depth_rows = []
-                img.save(f'output/{idx_png}_d.png')
+                img.save(f'output/d_{idx_png}.png')
+
                 idx_png += 1
+                
 
 
 if __name__ == "__main__":
@@ -227,7 +236,7 @@ if __name__ == "__main__":
     dir_encoder = model.PositionalEncoder(
         input_size=2,
         freq_range=[config['render']['freq_dir']['low'], config['render']['freq_dir']['high']]
-        ).to(device)
+    ).to(device)
     nerf_model = model.NerfModel(input_dim=encoder.output_size(), 
                                 input_dim_dir=dir_encoder.output_size()).to(device).float()
     raw_data = dataset.load_synthetic(config['path']['data'], verbose=True)
