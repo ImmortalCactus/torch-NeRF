@@ -3,37 +3,37 @@ import torch
 from torch.nn.functional import pad
 def get_c2w(t, rho_x, rho_y):
     translation = np.array([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0],
-        [0, 0, 1, t],
+        [1., 0, 0, 0],
+        [0, 1., 0, 0],
+        [0, 0, 1., t],
         [0, 0, 0, 1],
-    ], dtype=np.float32)
+    ])
     rotation_x = np.array([
-        [1, 0, 0, 0],
+        [1., 0, 0, 0],
         [0, np.cos(-rho_x), -np.sin(-rho_x), 0],
         [0, np.sin(-rho_x), np.cos(-rho_x), 0],
-        [0, 0, 0, 1],
-    ], dtype=np.float32)
+        [0, 0, 0, 1.],
+    ])
     rotation_y = np.array([
         [np.cos(rho_y), 0, np.sin(rho_y), 0],
-        [0, 1, 0, 0],
+        [0, 1., 0, 0],
         [-np.sin(rho_y), 0, np.cos(rho_y), 0],
-        [0, 0, 0, 1],
-    ], dtype=np.float32)
+        [0, 0, 0, 1.],
+    ])
     swap = np.array([
-        [-1, 0, 0, 0],
-        [0, 0, 1, 0],
-        [0, 1, 0, 0],
-        [0, 0, 0, 1],
-    ], dtype=np.float32)
+        [-1., 0, 0, 0],
+        [0, 0, 1., 0],
+        [0, 1., 0, 0],
+        [0, 0, 0, 1.],
+    ])
     return swap @ rotation_y @ rotation_x @ translation
 
 
 def get_rays(h, w, f, matrices):
-    x_axis = (np.arange(w, dtype=np.float32) - w/2 + 0.5) / f
-    y_axis = (np.arange(h, dtype=np.float32) - h/2 + 0.5) / f * -1
+    x_axis = (np.arange(w) - w/2 + 0.5) / f
+    y_axis = (np.arange(h) - h/2 + 0.5) / f * -1.
     x, y = np.meshgrid(x_axis, y_axis, indexing='xy')
-    z = np.ones_like(x, dtype=np.float32) * -1
+    z = np.ones_like(x) * -1.
     
     coords = np.stack([x,y,z], axis=-1)
     coords = coords.reshape([-1, 3])
@@ -42,7 +42,7 @@ def get_rays(h, w, f, matrices):
     origin = matrices[:, :3, -1]
     dirs = np.matmul(coords, matrices[:, :3, :3].transpose((0, 2, 1)))
     dirs = dirs.reshape(matrices.shape[0], h, w, 3)
-    return origin.astype(np.float32), dirs.astype(np.float32)
+    return origin, dirs
 
 def get_spherical(d):
     theta = torch.arccos(d[..., 2])
@@ -107,13 +107,15 @@ class FineSampler2():
         self.cum_w = self.cum_w.swapaxes(1, 2) # [batch, fine, coarse]
         self.t_vals = self.t_vals.swapaxes(1, 2)
     def sample(self, n, random=True):
-        sampled = torch.linspace(0, 1-1e-10, n, device=self.cum_w.device)
+        s = 1. / n
+        sampled = torch.arange(0, n, device=self.cum_w.device) * s
         if random:
-            mid = (sampled[:-1] + sampled[1:]) / 2
-            lower = torch.cat([sampled[:1], mid], dim=-1)
-            upper = torch.cat([mid, sampled[-1:]], dim=-1)
-            random_w = torch.rand(self.cum_w.shape[0], n, device=self.cum_w.device)
-            sampled = lower[None, ...] * (1 - random_w) + upper[None, ...] * random_w
+            sampled = sampled + torch.empty(
+                [self.cum_w.shape[0], n],
+                device=self.cum_w.device).uniform_(
+                    to=(s - torch.finfo(torch.float32).eps
+                )
+            )
             sampled = sampled[..., None]
         else:
             sampled = sampled[None, :, None]

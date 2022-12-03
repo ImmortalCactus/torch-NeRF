@@ -25,9 +25,11 @@ print(f'using {device} as device')
 
 def forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder, more_info=False):
     encoded = encoder(o, d, r, t_vals[:, :-1, :], t_vals[:, 1:, :])
+    encoded = encoded.to(torch.float32)
     dirs = d / torch.norm(d, dim=-1, keepdim=True)
     sphericals = render.get_spherical(dirs)
     dirs_encoded = dir_encoder(sphericals)
+    dirs_encoded = dirs_encoded.to(torch.float32)
     density, rgb = nerf_model(encoded, dirs_encoded)
     delta_t = t_vals[:, 1:, :] - t_vals[:, :-1, :]
     delta_t *= torch.norm(d, dim=-1, keepdim=True)
@@ -102,7 +104,6 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
             pbar = tqdm.tqdm(dataloader)
             for o, d, ground_truth, pixel_size, scale in pbar:
                 with torch.cuda.amp.autocast(enabled=conf_train['mixed_precision']):
-
                     o = o.to(device)
                     d = d.to(device)
                     ground_truth = ground_truth.to(device)
@@ -111,7 +112,7 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
                     else:
                         ground_truth = ground_truth[..., :3] * ground_truth[..., -1:]
                     r = pixel_size * 2 / np.sqrt(12) # sqrt(3)
-                    r = r.to(device, torch.float32)
+                    r = r.to(device)
                     o = o[:, None, :]
                     d = d[:, None, :]
                     r = r[:, None, None]
@@ -124,7 +125,7 @@ def train(train_dataset, nerf_model, encoder, dir_encoder):
                         device=device)
                     weights_coarse, result_coarse = forward(o, d, r, t_vals, nerf_model, encoder, dir_encoder)
 
-                    fine_sampler = render.FineSampler2(weights_coarse, t_vals, alpha=0.001)
+                    fine_sampler = render.FineSampler2(weights_coarse, t_vals, alpha=1e-10, epsilon=1e-10)
                     fine_t_vals = fine_sampler.sample(
                         conf_render['samples']['fine'] + 1,
                         random=True
@@ -181,7 +182,7 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
             o = o.to(device)
             d = d.to(device)
             r = pixel_size / np.sqrt(3) # sqrt(3)
-            r = r.to(device, torch.float32)
+            r = r.to(device)
             o = o[:, None, :]
             d = d[:, None, :]
             r = r[:, None, None]
@@ -217,7 +218,9 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
                 img.save(f'output/{idx_png}.png')
 
                 t_normalized = (depths[:img_size, :] - conf_render['near']) / (conf_render['far'] - conf_render['near'])
+                depths = depths[img_size:, :]
                 d_img = torch.cat([t_normalized.expand([-1, 3]), alphas[:img_size, :]], dim=1)
+                alphas = alphas[img_size:, :]
                 d_img = d_img.reshape([test_dataset.widths[0], test_dataset.heights[0], 4])
                 img = d_img.cpu().numpy()
                 img *= 255
@@ -238,7 +241,7 @@ if __name__ == "__main__":
         freq_range=[config['render']['freq_dir']['low'], config['render']['freq_dir']['high']]
     ).to(device)
     nerf_model = model.NerfModel(input_dim=encoder.output_size(), 
-                                input_dim_dir=dir_encoder.output_size()).to(device).float()
+                                input_dim_dir=dir_encoder.output_size()).to(device)
     raw_data = dataset.load_synthetic(config['path']['data'], verbose=True)
     
     if args.mode == 'train':

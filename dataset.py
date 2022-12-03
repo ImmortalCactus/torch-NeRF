@@ -66,7 +66,7 @@ class PixelDataset(Dataset):
         for i in range(mip_level):
             if i == 0:
                 imgs = np.stack(data_dict['images'])
-                imgs = imgs.astype(np.float32) / 255
+                imgs = imgs / 255.
                 self.images.append(imgs)
                 
                 self.heights.append(data_dict['height'])
@@ -103,4 +103,4 @@ class PixelDataset(Dataset):
         idx -= n_img * (self.heights[n_level] * self.widths[n_level])
         i = idx // self.widths[n_level]
         j = idx % self.widths[n_level]
-        return self.rays[n_level]['origins'][n_img], self.rays[n_level]['directions'][n_img, i, j], self.images[n_level][n_img, i, j], 1/self.focals[n_level], 2.**n_level
+        return self.rays[n_level]['origins'][n_img], self.rays[n_level]['directions'][n_img, i, j], self.images[n_level][n_img, i, j], 1/self.focals[n_level], (2.**n_level)

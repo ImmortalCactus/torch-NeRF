@@ -113,7 +113,6 @@ class NerfModel(nn.Module):
         )
     
     def forward(self, input_pos, input_dir):
-        assert not torch.any(torch.isnan(input_pos))
         output = self.density0(input_pos)
         output = torch.cat([output, input_pos], axis=-1)
         output = self.density1(output)
@@ -123,3 +122,8 @@ class NerfModel(nn.Module):
         output = self.rgb1(output)
         rgb = self.rgb_out(output)
         return density, rgb
+
+    def _xavier_init(self):
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)

@@ -1,6 +1,6 @@
 ---
 resource:
-  device: cuda:2
+  device: cuda:1
 
 path:
   data: ./nerf_synthetic/lego
