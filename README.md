@@ -10,6 +10,11 @@ Currently only the Blender synthetic dataset is supported. Which can be download
 Testing 
 
 `$ python train.py --config=config.yml --mode=test`
+
+# Results
+~20 epochs on the LEGO dataset with no multiscale
+![20 epoch result](https://imgur.com/a/avsF9Zk)
+![20 epoch depth](https://imgur.com/SMmMgcs)
 # References
 * [Original Paper](https://arxiv.org/abs/2103.13415)
 * [mipnerf-pytorch](https://github.com/bebeal/mipnerf-pytorch/tree/7b2ec348093285e1f549c52d54fb3871b987e6f5)
