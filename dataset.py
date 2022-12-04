@@ -37,7 +37,7 @@ def load_synthetic(basedir: str='./nerf_synthetic/lego', verbose=False):
 
             if dataset['height'] is None:
                 dataset['height'], dataset['width'] = img.shape[:2]
-                dataset['focal'] = dataset['width']/np.arctan(meta_data['camera_angle_x']/2)
+                dataset['focal'] = dataset['width'] / 2. /np.arctan(meta_data['camera_angle_x']/2)
 
             matrix = np.array(frame['transform_matrix'])
             dataset['matrices'].append(matrix)
