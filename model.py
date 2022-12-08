@@ -74,7 +74,8 @@ class IntegratedPositionalEncoder(nn.Module):
 class NerfModel(nn.Module):
     def __init__(self, input_dim=69, 
                     input_dim_dir=22,
-                    hidden_dim=256):
+                    hidden_dim=256,
+                    eps=1e-3):
         super().__init__()
         self.density0 = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -111,6 +112,7 @@ class NerfModel(nn.Module):
             nn.Linear(hidden_dim, 3),
             nn.Sigmoid()
         )
+        self.eps = eps
     
     def forward(self, input_pos, input_dir):
         output = self.density0(input_pos)
@@ -121,6 +123,7 @@ class NerfModel(nn.Module):
         output = torch.cat([output, input_dir.expand(-1, output.shape[1], -1)], dim=-1)
         output = self.rgb1(output)
         rgb = self.rgb_out(output)
+        rgb = rgb * (1 + 2 * self.eps) - self.eps # see appendix of the orig paper
         return density, rgb
 
     def _xavier_init(self):
