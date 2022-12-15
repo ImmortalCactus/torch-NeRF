@@ -3,9 +3,9 @@ resource:
   device: cuda:1
 
 path:
-  data: ./nerf_synthetic/lego
+  data: ./nerf_synthetic/drums
   output: ./output
-  ckpt: ./ckpt/model.ckpt
+  ckpt: ./ckpt/model_drums_mip1.ckpt
 
 train:
   lr:
@@ -17,7 +17,7 @@ train:
   warmup_mult: 0.1
   num_workers: 4
   lambda_coarse: 0.1
-  from_ckpt: False
+  from_ckpt: True
   weight_decay: 0.1
   mixed_precision: True
   detect_anomaly: False

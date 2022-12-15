@@ -174,9 +174,12 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
     nerf_model.eval()
     with torch.no_grad():
         pixels = torch.zeros([0, 3], device=device)
+        pixels_y = torch.zeros([0, 3], device=device)
         alphas = torch.zeros([0, 1], device=device)
         depths = torch.zeros([0, 1], device=device)
         idx_png = 0
+        
+        avg_psnr = (0, 0.)
 
         for o, d, ground_truth, pixel_size, scale in tqdm.tqdm(dataloader):
             o = o.to(device)
@@ -186,6 +189,12 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
             o = o[:, None, :]
             d = d[:, None, :]
             r = r[:, None, None]
+
+            ground_truth = ground_truth.to(device)
+            if conf_render['white_bkgd']:
+                ground_truth = ground_truth[..., :3] * ground_truth[..., -1:] + (1 - ground_truth[..., -1:])
+            else:
+                ground_truth = ground_truth[..., :3] * ground_truth[..., -1:]
 
             t_vals = render.gen_intervals(
                 conf_render['near'],
@@ -203,13 +212,24 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
 
             weights_fine, result_fine, a, d = forward(o, d, r, fine_t_vals, nerf_model, encoder, dir_encoder, more_info=True)
 
+
+
             pixels = torch.cat([pixels, result_fine])
+            pixels_y = torch.cat([pixels_y, ground_truth])
             alphas = torch.cat([alphas, a])
             depths = torch.cat([depths, d])
             img_size = test_dataset.widths[0] * test_dataset.heights[0]
             while pixels.shape[0] >= img_size:
                 img = pixels[:img_size, :]
+                img_y = pixels_y[:img_size, :]
+                loss = torch.sum(((img - img_y) ** 2), dim=-1)
+                loss = torch.mean(loss)
+                psnr = -10 * torch.log(loss) / np.log(10.)
+                print(f'{psnr}')
+                avg_psnr = (avg_psnr[0]+1, (avg_psnr[1]*avg_psnr[0]+psnr) / (avg_psnr[0]+1))
+
                 pixels = pixels[img_size:, :]
+                pixels_y = pixels_y[img_size:, :]
                 img = img.reshape([test_dataset.widths[0], test_dataset.heights[0], 3])
                 img = img.cpu().numpy()
                 img *= 255
@@ -229,6 +249,7 @@ def test(test_dataset, nerf_model, encoder, dir_encoder):
                 img.save(f'output/d_{idx_png}.png')
 
                 idx_png += 1
+        print(avg_psnr)
                 
 
 
